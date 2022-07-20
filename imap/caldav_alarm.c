@@ -53,7 +53,9 @@
 #include "caldav_alarm.h"
 #include "caldav_db.h"
 #include "calsched_support.h"
+#include "caldav_util.h"
 #include "cyrusdb.h"
+#include "defaultalarms.h"
 #include "httpd.h"
 #include "http_dav.h"
 #include "ical_support.h"
@@ -718,6 +720,7 @@ struct has_alarms_rock {
     int *has_alarms;
 };
 
+// FIXME TODO
 static int has_usedefaultalarms(icalcomponent *comp)
 {
     icalproperty *prop;
@@ -726,7 +729,8 @@ static int has_usedefaultalarms(icalcomponent *comp)
          prop = icalcomponent_get_next_property(comp, ICAL_X_PROPERTY)) {
         /* Check patch for default alerts properties */
         const char *xname = icalproperty_get_x_name(prop);
-        if (!strcasecmp(xname, "X-APPLE-DEFAULT-ALARM")) {
+        if (!strcasecmp(xname, "X-JMAP-USEDEFAULTALERTS") ||
+            !strcasecmp(xname, "X-APPLE-DEFAULT-ALARM")) { // required for legacy data
             const char *strval = icalproperty_get_value_as_string(prop);
             if (!strcasecmpsafe(strval, "TRUE")) {
                 return 1;
@@ -949,42 +953,6 @@ static int has_alarms(void *data, struct mailbox *mailbox,
     return has_alarms;
 }
 
-static icalcomponent *read_calendar_icalalarms(const char *mboxname,
-                                               const char *userid,
-                                               const char *annot)
-{
-    icalcomponent *ical = NULL;
-    struct buf buf = BUF_INITIALIZER;
-
-    annotatemore_lookupmask(mboxname, annot, userid, &buf);
-
-    if (buf_len(&buf)) {
-        struct dlist *dl = NULL;
-        if (dlist_parsemap(&dl, 1, 0, buf_base(&buf), buf_len(&buf)) == 0) {
-            const char *content = NULL;
-            if (dlist_getatom(dl, "CONTENT", &content)) {
-                buf_setcstr(&buf, content);
-            }
-        }
-        dlist_free(&dl);
-    }
-    if (buf_len(&buf)) {
-        ical = icalparser_parse_string(buf_cstring(&buf));
-        if (ical) {
-            if (icalcomponent_isa(ical) == ICAL_VALARM_COMPONENT) {
-                /* libical wraps multiple VALARMs in a XROOT component,
-                 * so also wrap a single VALARM for consistency */
-                icalcomponent *root = icalcomponent_new(ICAL_XROOT_COMPONENT);
-                icalcomponent_add_component(root, ical);
-                ical = root;
-            }
-        }
-    }
-
-    buf_free(&buf);
-    return ical;
-}
-
 static time_t process_alarms(const char *mboxname, uint32_t imap_uid,
                              const char *userid, icaltimezone *floatingtz,
                              icalcomponent *ical, time_t lastrun,
@@ -993,25 +961,16 @@ static time_t process_alarms(const char *mboxname, uint32_t imap_uid,
     icalcomponent *myical = NULL;
 
     /* Add default alarms */
-    if (icalcomponent_read_usedefaultalerts(ical) > 0) {
-        static const char *withtime_annot =
-            DAV_ANNOT_NS "<" XML_NS_CALDAV ">default-alarm-vevent-datetime";
-        static const char *withdate_annot =
-            DAV_ANNOT_NS "<" XML_NS_CALDAV ">default-alarm-vevent-date";
+    if (icalcomponent_get_usedefaultalerts(ical)) {
+        struct defaultalarms defalarms = DEFAULTALARMS_INITIALIZER;
 
-        icalcomponent *withtime =
-            read_calendar_icalalarms(mboxname, userid, withtime_annot);;
-        icalcomponent *withdate =
-            read_calendar_icalalarms(mboxname, userid, withdate_annot);
-
-        if (withtime || withdate) {
+        if (!defaultalarms_load(mboxname, userid, &defalarms)) {
             myical = icalcomponent_clone(ical);
-            icalcomponent_add_defaultalerts(myical, withtime, withdate, 0);
+            defaultalarms_insert(&defalarms, myical, 0);
             ical = myical;
         }
 
-        if (withtime) icalcomponent_free(withtime);
-        if (withdate) icalcomponent_free(withdate);
+        defaultalarms_fini(&defalarms);
     }
 
     /* Process alarms */
