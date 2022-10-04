@@ -3633,6 +3633,8 @@ static int mailbox_update_caldav(struct mailbox *mailbox,
         }
     }
 
+    assert(resource);
+
     caldavdb = mailbox_open_caldav(mailbox);
 
     /* Find existing record for this resource */
@@ -3640,6 +3642,8 @@ static int mailbox_update_caldav(struct mailbox *mailbox,
                                 .uniqueid = (char *)mailbox_uniqueid(mailbox) };
 
     caldav_lookup_resource(caldavdb, &mbentry, resource, &cdata, /*tombstones*/1);
+
+    assert(cdata->dav.resource);
 
     /* has this record already been replaced?  Don't write anything */
     if (cdata->dav.imap_uid > new->uid) goto done;
