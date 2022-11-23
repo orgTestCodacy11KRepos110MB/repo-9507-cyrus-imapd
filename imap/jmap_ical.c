@@ -610,25 +610,6 @@ static char *normalized_uri(const char *uri)
     return buf_release(&buf);
 }
 
-
-static const char*
-get_icalxparam_value(icalproperty *prop, const char *name)
-{
-    icalparameter *param;
-
-    for (param = icalproperty_get_first_parameter(prop, ICAL_ANY_PARAMETER);
-         param;
-         param = icalproperty_get_next_parameter(prop, ICAL_ANY_PARAMETER)) {
-
-        if (strcasecmpsafe(icalparameter_get_xname(param), name)) {
-            continue;
-        }
-        return icalparameter_get_xvalue(param);
-    }
-
-    return NULL;
-}
-
 static void unescape_ical_text(struct buf *buf, const char *s)
 {
     for (; *s; s++) {
@@ -714,7 +695,7 @@ static void remove_icalxprop(icalcomponent *comp, const char *name)
 static void xjmapid_from_icalm(struct buf *dst, icalproperty *prop)
 {
     buf_reset(dst);
-    const char *id = get_icalxparam_value(prop, JMAPICAL_XPARAM_ID);
+    const char *id = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_ID);
     if (!id) {
         char keybuf[JMAPICAL_SHA1HEXSTR_LEN];
         id = sha1hexstr(icalproperty_as_ical_string(prop), keybuf);
@@ -753,7 +734,7 @@ static icalproperty* findprop_byid(icalcomponent *comp, const char *id,
          prop;
          prop = icalcomponent_get_next_property(comp, kind)) {
 
-        const char *oldid = get_icalxparam_value(prop, JMAPICAL_XPARAM_ID);
+        const char *oldid = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_ID);
         char keybuf[JMAPICAL_SHA1HEXSTR_LEN];
         if (!oldid)
             oldid = sha1hexstr(icalproperty_get_value_as_string(prop), keybuf);
@@ -2054,7 +2035,7 @@ link_from_ical(icalproperty *prop, struct jmapical_ctx *jmapctx)
     }
 
     /* cid */
-    if ((s = get_icalxparam_value(prop, JMAPICAL_XPARAM_CID))) {
+    if ((s = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_CID))) {
         json_object_set_new(link, "cid", json_string(s));
     }
 
@@ -2070,7 +2051,7 @@ link_from_ical(icalproperty *prop, struct jmapical_ctx *jmapctx)
         json_object_set_new(link, "title",
                 json_string(icalparameter_get_filename(param)));
     }
-    else if ((s = get_icalxparam_value(prop, JMAPICAL_XPARAM_TITLE))) {
+    else if ((s = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_TITLE))) {
         /* - support legacy x-param */
         struct buf buf = BUF_INITIALIZER;
         unescape_ical_text(&buf, s);
@@ -2091,14 +2072,14 @@ link_from_ical(icalproperty *prop, struct jmapical_ctx *jmapctx)
     }
 
     /* rel */
-    const char *rel = get_icalxparam_value(prop, JMAPICAL_XPARAM_REL);
+    const char *rel = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_REL);
     if (!rel && icalproperty_isa(prop) == ICAL_URL_PROPERTY) {
         rel = "describedby";
     }
     json_object_set_new(link, "rel", json_string(rel));
 
     /* display */
-    if ((s = get_icalxparam_value(prop, JMAPICAL_XPARAM_DISPLAY))) {
+    if ((s = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_DISPLAY))) {
         json_object_set_new(link, "display", json_string(s));
     }
 
@@ -2133,7 +2114,7 @@ static json_t* linksbyprop_from_ical(icalcomponent *comp,
              prop;
              prop = icalcomponent_get_next_property(comp, kind)) {
 
-            const char *propname = get_icalxparam_value(prop, JMAPICAL_XPARAM_PARENTPROP);
+            const char *propname = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_PARENTPROP);
             if (!propname) propname = "links";
 
             json_t *jlinks_propname = json_object_get(jlinks, propname);
@@ -2142,7 +2123,7 @@ static json_t* linksbyprop_from_ical(icalcomponent *comp,
                 json_object_set_new(jlinks, propname, jlinks_propname);
             }
 
-            const char *propid = get_icalxparam_value(prop, JMAPICAL_XPARAM_PARENTID);
+            const char *propid = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_PARENTID);
             json_t *jlinks_propid = NULL;
             if (propid) {
                 jlinks_propid = json_object_get(jlinks_propname, propid);
@@ -2152,7 +2133,7 @@ static json_t* linksbyprop_from_ical(icalcomponent *comp,
                 }
             }
 
-            const char *id = get_icalxparam_value(prop, JMAPICAL_XPARAM_ID);
+            const char *id = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_ID);
             char keybuf[JMAPICAL_SHA1HEXSTR_LEN];
             if (!id)
                 id = sha1hexstr(icalproperty_get_value_as_string(prop), keybuf);
@@ -2294,7 +2275,7 @@ static json_t *participant_from_ical(icalproperty *prop,
 
     /* locationId */
     const char *locid;
-    if ((locid = get_icalxparam_value(prop, JMAPICAL_XPARAM_LOCATIONID))) {
+    if ((locid = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_LOCATIONID))) {
         json_object_set_new(p, "locationId", json_string(locid));
     }
 
@@ -2332,7 +2313,7 @@ static json_t *participant_from_ical(icalproperty *prop,
     json_object_set_new(p, "participationStatus", json_string(partstat));
 
     /* description */
-    const char *desc = get_icalxparam_value(prop, JMAPICAL_XPARAM_DESCRIPTION);
+    const char *desc = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_DESCRIPTION);
     if (desc) {
         unescape_ical_text(&buf, desc);
         json_object_set_new(p, "description", json_string(buf_cstring(&buf)));
@@ -2418,7 +2399,7 @@ static json_t *participant_from_ical(icalproperty *prop,
         if (param) {
             const char *dir = icalparameter_get_dir(param);
             if (dir) {
-                const char *linkid = get_icalxparam_value(prop, JMAPICAL_XPARAM_LINKID);
+                const char *linkid = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_LINKID);
                 char keybuf[JMAPICAL_SHA1HEXSTR_LEN];
                 if (!linkid) {
                     /* Generate a link id from the dir value. Note that the
@@ -2434,7 +2415,7 @@ static json_t *participant_from_ical(icalproperty *prop,
         if (links) json_object_set_new(p, "links", links);
 
         /* participationComment */
-        const char *comment = get_icalxparam_value(prop, JMAPICAL_XPARAM_COMMENT);
+        const char *comment = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_COMMENT);
         if (comment) {
             unescape_ical_text(&buf, comment);
             json_object_set_new(p, "participationComment", json_string(buf_cstring(&buf)));
@@ -2444,7 +2425,7 @@ static json_t *participant_from_ical(icalproperty *prop,
 
     /* scheduleSequence */
     long schedule_sequence = 0;
-    const char *xval = get_icalxparam_value(prop, JMAPICAL_XPARAM_SEQUENCE);
+    const char *xval = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_SEQUENCE);
     if (xval) {
         bit64 res;
         if (parsenum(xval, &xval, strlen(xval), &res) == 0) {
@@ -2454,7 +2435,7 @@ static json_t *participant_from_ical(icalproperty *prop,
     }
 
     /* scheduleUpdated */
-    if ((xval = get_icalxparam_value(prop, JMAPICAL_XPARAM_DTSTAMP))) {
+    if ((xval = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_DTSTAMP))) {
         icaltimetype icaltstamp = icaltime_from_string(xval);
         if (!icaltime_is_null_time(icaltstamp) && !icaltstamp.is_date &&
                 icaltstamp.zone == icaltimezone_get_utc_timezone()) {
@@ -2508,7 +2489,7 @@ static json_t *participant_from_ical(icalproperty *prop,
 
     /* invitedBy */
     const char *invitedby;
-    if ((invitedby = get_icalxparam_value(prop, JMAPICAL_XPARAM_INVITEDBY))) {
+    if ((invitedby = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_INVITEDBY))) {
         const char *invitedbyid = NULL;
         if (id_by_uri) {
             invitedbyid = hash_lookup(invitedby, id_by_uri);
@@ -2548,7 +2529,7 @@ participants_from_ical(icalcomponent *comp, json_t *linksbyparticipant)
         hash_insert(uri, prop, &attendee_by_uri);
 
         /* Map mailto:URI to ID */
-        const char *id = get_icalxparam_value(prop, JMAPICAL_XPARAM_ID);
+        const char *id = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_ID);
         char keybuf[JMAPICAL_SHA1HEXSTR_LEN];
         if (!id) id = sha1hexstr(uri, keybuf);
         hash_insert(uri, xstrdup(id), &id_by_uri);
@@ -2596,7 +2577,7 @@ participants_from_ical(icalcomponent *comp, json_t *linksbyparticipant)
             const char *comment = schedule_comment;
             if (!comment) {
                 /* Look for Google Calendar comment */
-                comment = get_icalxparam_value(prop, "X-RESPONSE-COMMENT");
+                comment = icalproperty_get_xparam_value(prop, "X-RESPONSE-COMMENT");
                 if (comment) {
                     unescape_ical_text(&buf, comment);
                     comment = buf_cstring(&buf);
@@ -2618,7 +2599,7 @@ participants_from_ical(icalcomponent *comp, json_t *linksbyparticipant)
         if (uri) {
             if (!hash_lookup(uri, &attendee_by_uri)) {
                 /* Add a default participant for the organizer. */
-                const char *id = get_icalxparam_value(orga, JMAPICAL_XPARAM_ID);
+                const char *id = icalproperty_get_xparam_value(orga, JMAPICAL_XPARAM_ID);
                 char keybuf[JMAPICAL_SHA1HEXSTR_LEN];
                 if (!id) id = sha1hexstr(uri, keybuf);
                 json_t *p = participant_from_ical(orga, &id_by_uri, orga,
@@ -2851,11 +2832,11 @@ static json_t* location_from_ical(icalproperty *prop, json_t *links,
     if (name) json_object_set_new(loc, "name", json_string(name));
 
     /* rel */
-    const char *rel = get_icalxparam_value(prop, JMAPICAL_XPARAM_REL);
+    const char *rel = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_REL);
     if (rel) json_object_set_new(loc, "relativeTo", json_string(rel));
 
     /* description */
-    const char *desc = get_icalxparam_value(prop, JMAPICAL_XPARAM_DESCRIPTION);
+    const char *desc = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_DESCRIPTION);
     if (desc && *desc) {
         struct buf buf = BUF_INITIALIZER;
         unescape_ical_text(&buf, desc);
@@ -2864,13 +2845,13 @@ static json_t* location_from_ical(icalproperty *prop, json_t *links,
     }
 
     /* timeZone */
-    const char *timezone = get_icalxparam_value(prop, JMAPICAL_XPARAM_TZID);
+    const char *timezone = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_TZID);
     if (jstimezones_lookup_jstzid(jstzones, timezone)) {
         json_object_set_new(loc, "timeZone", json_string(timezone));
     }
 
     /* coordinates */
-    const char *coord = get_icalxparam_value(prop, JMAPICAL_XPARAM_GEO);
+    const char *coord = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_GEO);
     if (coord) json_object_set_new(loc, "coordinates", json_string(coord));
 
     /* locationTypes */
@@ -2990,7 +2971,7 @@ locations_from_ical(icalcomponent *comp, json_t *linksbyloc,
             if (strncmpsafe(uri, "geo:", 4)) continue;
 
             struct buf title = BUF_INITIALIZER;
-            const char *s = get_icalxparam_value(prop, JMAPICAL_XPARAM_TITLE);
+            const char *s = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_TITLE);
             if (s) unescape_ical_text(&title, s);
 
             if (mainlocid) {
@@ -3055,7 +3036,7 @@ virtuallocations_from_ical(icalcomponent *comp)
             if (name && *name) json_object_set_new(loc, "name", json_string(name));
         }
 
-        const char *desc = get_icalxparam_value(prop, JMAPICAL_XPARAM_DESCRIPTION);
+        const char *desc = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_DESCRIPTION);
         if (desc && *desc) {
             struct buf buf = BUF_INITIALIZER;
             unescape_ical_text(&buf, desc);
@@ -5005,7 +4986,7 @@ participant_to_ical(icalcomponent *comp,
         /* Link objects generated from DIR parameter stick to DIR */
         param = icalproperty_get_first_parameter(oldattendee, ICAL_DIR_PARAMETER);
         if (param) {
-            const char *linkid = get_icalxparam_value(prop, JMAPICAL_XPARAM_LINKID);
+            const char *linkid = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_LINKID);
             char keybuf[JMAPICAL_SHA1HEXSTR_LEN];
             if (!linkid) {
                 linkid = sha1hexstr(icalparameter_get_dir(param), keybuf);
@@ -6347,7 +6328,7 @@ const char *locations_to_ical_keep_old_main(json_t *locations,
     if (!prop) goto done;
 
     struct buf title = BUF_INITIALIZER;
-    const char *s = get_icalxparam_value(prop, JMAPICAL_XPARAM_TITLE);
+    const char *s = icalproperty_get_xparam_value(prop, JMAPICAL_XPARAM_TITLE);
     if (s) unescape_ical_text(&title, s);
 
     const char *geouri = icalproperty_get_value_as_string(prop);
