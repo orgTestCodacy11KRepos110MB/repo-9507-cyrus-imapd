@@ -924,7 +924,8 @@ static int do_scheduling(jmap_req_t *req,
 
     if (strarray_find_case(schedule_addresses, organizer, 0) >= 0) {
         /* Organizer scheduling object resource */
-        sched_request(req->userid, schedule_addresses, organizer, oldical, ical);
+        sched_request(req->userid, schedule_addresses, organizer,
+                      oldical, ical, SCHED_MECH_JMAP_RESTORE);
     } else {
         /* Attendee scheduling object resource */
         int omit_reply = 0;
@@ -954,7 +955,8 @@ static int do_scheduling(jmap_req_t *req,
         }
 
         if (!omit_reply && strarray_size(schedule_addresses))
-            sched_reply(req->userid, schedule_addresses, oldical, ical);
+            sched_reply(req->userid, schedule_addresses,
+                        oldical, ical, SCHED_MECH_JMAP_RESTORE);
     }
 
     return 0;
