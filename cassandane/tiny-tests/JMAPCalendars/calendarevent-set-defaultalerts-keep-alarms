@@ -9,6 +9,31 @@ sub test_calendarevent_set_defaultalerts_keep_alarms
     my $jmap = $self->{jmap};
     my $caldav = $self->{caldav};
 
+    my @using = qw(
+    urn:ietf:params:jmap:core
+    urn:ietf:params:jmap:calendars
+    urn:ietf:params:jmap:calendars:preferences
+    https://cyrusimap.org/ns/jmap/admin
+    https://cyrusimap.org/ns/jmap/calendars
+    https://cyrusimap.org/ns/jmap/debug
+    https://cyrusimap.org/ns/jmap/performance
+);
+
+    xlog $self, "Set default alert preferences";
+    $res = $jmap->CallMethods([
+        ['CalendarPreferences/set', {
+            update => {
+                singleton => {
+                    defaultAlertsPreferences => {
+                        keepUserAlarms => JSON::true,
+                        keepAppleAlarms => JSON::true,
+                    }
+                },
+            },
+        }, 'R1'],
+    ], \@using);
+    $self->assert(exists $res->[0][1]{updated}{singleton});
+
     xlog $self, "Prepare non-recurring event";
     my $ical = <<EOF;
 BEGIN:VCALENDAR
