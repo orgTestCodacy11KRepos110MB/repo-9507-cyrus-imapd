@@ -906,6 +906,7 @@ static void imapd_reset(void)
     }
     imapd_userisadmin = 0;
     imapd_userisproxyadmin = 0;
+    imapd_namespace.isutf8 = 0;
     client_capa = 0;
     if (imapd_saslconn) {
         sasl_dispose(&imapd_saslconn);
@@ -14925,6 +14926,7 @@ static void cmd_enable(char *tag)
     prot_printf(imapd_out, "* ENABLED");
     if (new_capa & CAPA_IMAP4REV2) {
         prot_printf(imapd_out, " IMAP4rev2");
+        imapd_namespace.isutf8 = 1;
     }
     if (new_capa & CAPA_CONDSTORE) {
         prot_printf(imapd_out, " CONDSTORE");
