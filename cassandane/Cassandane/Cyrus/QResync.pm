@@ -83,12 +83,15 @@ sub test_qresync_simple
         $uid++;
     }
 
+    # RFC 9501: Clients MUST NOT issue ENABLE once they SELECT/EXAMINE a mailbox
     my $talk = $self->{store}->get_client();
+    $talk->unselect();
+    $talk->enable("qresync");
+
     $talk->select("INBOX");
     my $uidvalidity = $talk->get_response_code('uidvalidity');
 
     xlog $self, "Mark some messages \\Deleted";
-    $talk->enable("qresync");
     $talk->store('5:10,25:45', '+flags', '(\\Deleted)');
 
     xlog $self, "Expunge messages";
