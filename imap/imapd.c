@@ -3944,6 +3944,24 @@ static int append_catenate(FILE *f, const char *cur_name, size_t maxsize, unsign
     return r;
 }
 
+static char *normalize_mboxname(char *name, struct listargs *listargs)
+{
+    char *nfc_name = charset_utf8_normalize(name);
+
+    if (strcmp(nfc_name, name)) {
+        if (listargs) {
+            /* Setup to emit LIST response with OLDNAME */
+            strarray_appendm(&listargs->pat, nfc_name);
+            listargs->denormalized = name;
+        }
+        return nfc_name;
+    }
+
+    free(nfc_name);
+
+    return name;
+}
+
 /* If an APPEND is proxied from another server,
  * 'cur_name' is the name of the currently selected mailbox (if any)
  * in case we have to resolve relative URLs
@@ -3964,6 +3982,15 @@ static int cmd_append(char *tag, char *name, const char *cur_name, int isreplace
     const char *parseerr = NULL, *url = NULL;
     struct appendstage *curstage;
     mbentry_t *mbentry = NULL;
+    const char *origname = name;
+    struct listargs listargs = {
+        LIST_CMD_EXTENDED, 0, LIST_RET_CHILDREN | LIST_RET_SPECIALUSE,
+        "", STRARRAY_INITIALIZER, NULL, 0, {0}, STRARRAY_INITIALIZER, NULL
+    };
+
+    if (client_capa & CAPA_IMAP4REV2) {
+        name = normalize_mboxname(name, &listargs);
+    }
 
     memset(&appendstate, 0, sizeof(struct appendstate));
 
@@ -4000,11 +4027,11 @@ static int cmd_append(char *tag, char *name, const char *cur_name, int isreplace
                 const char *mboxname = index_mboxname(imapd_index);
                 prot_printf(s->out, "%s Localappend {" SIZE_T_FMT "+}\r\n%s"
                             " {" SIZE_T_FMT "+}\r\n%s ",
-                            tag, strlen(name), name,
+                            tag, strlen(origname), origname,
                             strlen(mboxname), mboxname);
             } else {
                 prot_printf(s->out, "%s Localappend {" SIZE_T_FMT "+}\r\n%s"
-                            " \"\" ", tag, strlen(name), name);
+                            " \"\" ", tag, strlen(origname), origname);
             }
             if (!(r = pipe_command(s, 16384))) {
                 pipe_including_tag(s, tag, 0);
@@ -4251,6 +4278,11 @@ static int cmd_append(char *tag, char *name, const char *cur_name, int isreplace
 
     imapd_check(NULL, 1);
 
+    if (!r && strarray_size(&listargs.pat)) {
+        /* Emit LIST response with OLDNAME */
+        list_data(&listargs);
+    }
+
     if (r == IMAP_PROTOCOL_ERROR && parseerr) {
         prot_printf(imapd_out, "%s BAD %s\r\n", tag, parseerr);
     } else if (r == IMAP_BADURL) {
@@ -4309,6 +4341,7 @@ cleanup:
     }
     free(intname);
     ptrarray_fini(&stages);
+    strarray_fini(&listargs.pat);
 
     return r;
 }
@@ -4400,6 +4433,11 @@ static void cmd_select(char *tag, char *cmd, char *name)
     int wasopen = 0;
     int allowdeleted = config_getswitch(IMAPOPT_ALLOWDELETED);
     struct vanished_params *v = &init.vanished;
+    const char *origname = name;
+    struct listargs listargs = {
+        LIST_CMD_EXTENDED, 0, LIST_RET_CHILDREN | LIST_RET_SPECIALUSE,
+        "", STRARRAY_INITIALIZER, NULL, 0, {0}, STRARRAY_INITIALIZER, NULL
+    };
 
     memset(&init, 0, sizeof(struct index_init));
 
@@ -4511,11 +4549,18 @@ static void cmd_select(char *tag, char *cmd, char *name)
         wasopen = 1;
     }
 
+    if (client_capa & CAPA_IMAP4REV2) {
+        name = normalize_mboxname(name, &listargs);
+        if (name == origname) {
+            /* Always want LIST response even if name was in normal form */
+            strarray_append(&listargs.pat, name);
+        }
+    }
+
     char *intname = mboxname_from_external(name, &imapd_namespace, imapd_userid);
     r = mlookup(tag, name, intname, &mbentry);
     if (r == IMAP_MAILBOX_MOVED) {
-        free(intname);
-        return;
+        goto done;
     }
 
     if (!r && (mbentry->mbtype & MBTYPE_REMOTE)) {
@@ -4524,8 +4569,7 @@ static void cmd_select(char *tag, char *cmd, char *name)
         if (supports_referrals) {
             imapd_refer(tag, mbentry->server, name);
             mboxlist_entry_free(&mbentry);
-            free(intname);
-            return;
+            goto done;
         }
 
         backend_next = proxy_findserver(mbentry->server, &imap_protocol,
@@ -4548,8 +4592,7 @@ static void cmd_select(char *tag, char *cmd, char *name)
         if (r) {
             prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
             mboxlist_entry_free(&mbentry);
-            free(intname);
-            return;
+            goto done;
         }
 
         if (client_capa) {
@@ -4568,7 +4611,7 @@ static void cmd_select(char *tag, char *cmd, char *name)
 
         /* Send SELECT command to backend */
         prot_printf(backend_current->out, "%s %s {" SIZE_T_FMT "+}\r\n%s",
-                    tag, cmd, strlen(name), name);
+                    tag, cmd, strlen(origname), origname);
         if (v->uidvalidity) {
             prot_printf(backend_current->out, " (QRESYNC (%lu " MODSEQ_FMT,
                         v->uidvalidity, v->modseq);
@@ -4602,9 +4645,7 @@ static void cmd_select(char *tag, char *cmd, char *name)
             break;
         }
 
-        free(intname);
-
-        return;
+        goto done;
     }
 
     mboxlist_entry_free(&mbentry);
@@ -4647,8 +4688,7 @@ static void cmd_select(char *tag, char *cmd, char *name)
         prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
         seqset_free(&init.vanishedlist);
         if (doclose) index_close(&imapd_index);
-        free(intname);
-        return;
+        goto done;
     }
 
     if (index_hasrights(imapd_index, ACL_EXPUNGE))
@@ -4658,15 +4698,9 @@ static void cmd_select(char *tag, char *cmd, char *name)
 
     seqset_free(&init.vanishedlist);
 
-    if (client_capa & CAPA_IMAP4REV2) {
-        struct listargs listargs = {
-            LIST_CMD_EXTENDED, 0, LIST_RET_CHILDREN | LIST_RET_SPECIALUSE,
-            "", STRARRAY_INITIALIZER, NULL, 0, {0}, STRARRAY_INITIALIZER
-        };
-
-        strarray_append(&listargs.pat, name);
+    if (strarray_size(&listargs.pat)) {
+        /* Emit LIST response, optionally with OLDNAME */
         list_data(&listargs);
-        strarray_fini(&listargs.pat);
     }
 
     prot_printf(imapd_out, "%s OK [READ-%s] %s\r\n", tag,
@@ -4674,8 +4708,7 @@ static void cmd_select(char *tag, char *cmd, char *name)
                 "WRITE" : "ONLY", error_message(IMAP_OK_COMPLETED));
 
     syslog(LOG_DEBUG, "open: user %s opened %s", imapd_userid, name);
-    free(intname);
-    return;
+    goto done;
 
  badlist:
     prot_printf(imapd_out, "%s BAD Invalid modifier list in %s\r\n", tag, cmd);
@@ -4687,6 +4720,10 @@ static void cmd_select(char *tag, char *cmd, char *name)
                 tag, cmd);
     eatline(imapd_in, c);
     return;
+
+ done:
+    strarray_fini(&listargs.pat);
+    free(intname);
 }
 
 /*
@@ -7223,10 +7260,19 @@ static void cmd_create(char *tag, char *name, struct dlist *extargs, int localon
     struct mailbox *mailbox = NULL;
     char *mailboxid = NULL;
     mbentry_t *parent = NULL;
+    const char *origname = name;
+    struct listargs listargs = {
+        LIST_CMD_EXTENDED, 0, LIST_RET_CHILDREN | LIST_RET_SPECIALUSE,
+        "", STRARRAY_INITIALIZER, NULL, 0, {0}, STRARRAY_INITIALIZER, NULL
+    };
 
     /* We don't care about trailing hierarchy delimiters. */
     if (name[0] && name[strlen(name)-1] == imapd_namespace.hier_sep) {
         name[strlen(name)-1] = '\0';
+    }
+
+    if (client_capa & CAPA_IMAP4REV2) {
+        name = normalize_mboxname(name, &listargs);
     }
 
     mbname_t *mbname = mbname_from_extname(name, &imapd_namespace, imapd_userid);
@@ -7399,7 +7445,7 @@ static void cmd_create(char *tag, char *name, struct dlist *extargs, int localon
 
                     // why not send a LOCALCREATE to the backend?
                     prot_printf(s_conn->out, "%s CREATE ", tag);
-                    prot_printastring(s_conn->out, name);
+                    prot_printastring(s_conn->out, origname);
 
                     // special use needs extended support, so pass through extargs
                     if (specialuse.len || uniqueid) {
@@ -7622,6 +7668,11 @@ localcreate:
     index_release(imapd_index);
     sync_checkpoint(imapd_in);
 
+    if (strarray_size(&listargs.pat)) {
+        /* Emit LIST response with OLDNAME */
+        list_data(&listargs);
+    }
+
     prot_printf(imapd_out, "%s OK [MAILBOXID (%s)] Completed\r\n", tag, mailboxid);
 
     imapd_check(NULL, 0);
@@ -7633,6 +7684,7 @@ done:
     buf_free(&specialuse);
     mbname_free(&mbname);
     free(mailboxid);
+    strarray_fini(&listargs.pat);
 }
 
 /* Callback for use by cmd_delete */
@@ -7674,9 +7726,18 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
     int r;
     mbentry_t *mbentry = NULL;
     struct mboxevent *mboxevent = NULL;
-    mbname_t *mbname = mbname_from_extname(name, &imapd_namespace, imapd_userid);
     int delete_user = 0;
+    const char *origname = name;
+    struct listargs listargs = {
+        LIST_CMD_EXTENDED, 0, LIST_RET_CHILDREN | LIST_RET_SPECIALUSE,
+        "", STRARRAY_INITIALIZER, NULL, 0, {0}, STRARRAY_INITIALIZER, NULL
+    };
 
+    if (client_capa & CAPA_IMAP4REV2) {
+        name = normalize_mboxname(name, NULL);
+    }
+
+    mbname_t *mbname = mbname_from_extname(name, &imapd_namespace, imapd_userid);
     struct mboxlock *namespacelock = mboxname_usernamespacelock(mbname_intname(mbname));
 
     r = mlookup(NULL, NULL, mbname_intname(mbname), &mbentry);
@@ -7692,20 +7753,17 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
         if (supports_referrals) {
             imapd_refer(tag, mbentry->server, name);
             referral_kick = 1;
-            mboxlist_entry_free(&mbentry);
-            mbname_free(&mbname);
-            return;
+            goto done;
         }
 
         s = proxy_findserver(mbentry->server, &imap_protocol,
                              proxy_userid, &backend_cached,
                              &backend_current, &backend_inbox, imapd_in);
-        mboxlist_entry_free(&mbentry);
         if (!s) r = IMAP_SERVER_UNAVAILABLE;
 
         if (!r) {
             prot_printf(s->out, "%s DELETE {" SIZE_T_FMT "+}\r\n%s\r\n",
-                        tag, strlen(name), name);
+                        tag, strlen(origname), origname);
             res = pipe_until_tag(s, tag, 0);
 
             if (!CAPA(s, CAPA_MUPDATE) && res == PROXY_OK) {
@@ -7726,8 +7784,7 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
             prot_printf(imapd_out, "%s %s", tag, s->last_result.s);
         }
 
-        mbname_free(&mbname);
-        return;
+        goto done;
     }
 
     mboxevent = mboxevent_new(EVENT_MAILBOX_DELETE);
@@ -7781,7 +7838,6 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
             if (!r) r = user_deletedata(mbentry, 1);
         }
     }
-    mboxlist_entry_free(&mbentry);
 
     if (!r && config_getswitch(IMAPOPT_DELETE_UNSUBSCRIBE)) {
         mboxlist_changesub(mbname_intname(mbname), imapd_userid, imapd_authstate,
@@ -7802,9 +7858,20 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
         index_release(imapd_index);
         sync_checkpoint(imapd_in);
 
+        if (name != origname) {
+            /* Emit LIST response for name with OLDNAME */
+            print_listresponse(listargs.cmd, name, origname,
+                               imapd_namespace.hier_sep,
+                               MBOX_ATTRIBUTE_NONEXISTENT, NULL);
+        }
+
         prot_printf(imapd_out, "%s OK %s\r\n", tag,
                     error_message(IMAP_OK_COMPLETED));
     }
+
+  done:
+    if (name != origname) free(name);
+    mboxlist_entry_free(&mbentry);
     mbname_free(&mbname);
 }
 
@@ -7946,10 +8013,21 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
     int mbtype = 0;
     mbentry_t *mbentry = NULL;
     struct renrock rock;
+    const char *orig_oldname = oldname;
+    const char *orig_newname = newname;
+    struct listargs listargs = {
+        LIST_CMD_EXTENDED, 0, LIST_RET_CHILDREN | LIST_RET_SPECIALUSE,
+        "", STRARRAY_INITIALIZER, NULL, 0, {0}, STRARRAY_INITIALIZER, NULL
+    };
 
     if (location && !imapd_userisadmin) {
         prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(IMAP_PERMISSION_DENIED));
         return;
+    }
+
+    if (client_capa & CAPA_IMAP4REV2) {
+        oldname = normalize_mboxname(oldname, NULL);
+        newname = normalize_mboxname(newname, &listargs);
     }
 
     if (location && strcmp(oldname, newname)) {
@@ -7960,6 +8038,8 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
         prot_printf(imapd_out,
                     "%s NO Cross-server or cross-partition move w/rename not supported\r\n",
                     tag);
+        if (oldname != orig_oldname) free(oldname);
+        strarray_fini(&listargs.pat);
         return;
     }
 
@@ -8056,8 +8136,8 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
                 prot_printf(s->out,
                         "%s RENAME \"%s\" \"%s\" %s\r\n",
                         tag,
-                        oldname,
-                        newname,
+                        orig_oldname,
+                        orig_newname,
                         location);
             } else {
                 /* different server: proxy an xfer */
@@ -8088,8 +8168,8 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location)
             prot_printf(s->out,
                     "%s RENAME \"%s\" \"%s\"\r\n",
                     tag,
-                    oldname,
-                    newname
+                    orig_oldname,
+                    orig_newname
                 );
 
             res = pipe_until_tag(s, tag, 0);
@@ -8359,6 +8439,17 @@ respond:
         index_release(imapd_index);
         sync_checkpoint(imapd_in);
 
+        if (oldname != orig_oldname) {
+            /* Emit LIST response for oldname with OLDNAME */
+            print_listresponse(listargs.cmd, oldname, orig_oldname,
+                               imapd_namespace.hier_sep,
+                               MBOX_ATTRIBUTE_NONEXISTENT, NULL);
+        }
+        if (strarray_size(&listargs.pat)) {
+            /* Emit LIST response for newname with OLDNAME */
+            list_data(&listargs);
+        }
+
         prot_printf(imapd_out, "%s OK %s\r\n", tag,
                     error_message(IMAP_OK_COMPLETED));
     }
@@ -8367,6 +8458,8 @@ done:
     mboxname_release(&oldnamespacelock);
     mboxname_release(&newnamespacelock);
     mboxlist_entry_free(&mbentry);
+    if (oldname != orig_oldname) free(oldname);
+    strarray_fini(&listargs.pat);
     free(oldextname);
     free(newextname);
     free(olduser);
@@ -13548,9 +13641,29 @@ static void list_response(const char *extname, const mbentry_t *mbentry,
         }
     }
 
-    print_listresponse(listargs->cmd, extname, NULL,
+    /* Do we need to add the OLDNAME extended data item? */
+    char *oldname = NULL;
+    if (listargs->denormalized) {
+        /* IMAP4rev2 client used a denormalized mailbox name */
+        oldname = xstrdup(listargs->denormalized);
+    }
+    else if (client_capa & CAPA_IMAP4REV2) {
+        /* Has this mailbox been renamed?
+           XXX  We store the name history in the I record. */
+        mbentry_t *id_mbe = NULL;
+        mboxlist_lookup_by_uniqueid(mbentry->uniqueid, &id_mbe, NULL);
+        if (id_mbe && ptrarray_size(&id_mbe->name_history)) {
+            former_name_t *histitem = ptrarray_nth(&id_mbe->name_history, 0);
+            oldname = mboxname_to_external(histitem->name,
+                                           &imapd_namespace, imapd_userid);
+        }
+        mboxlist_entry_free(&id_mbe);
+    }
+
+    print_listresponse(listargs->cmd, extname, oldname,
                        imapd_namespace.hier_sep, attributes, &specialuse);
     buf_free(&specialuse);
+    free(oldname);
 
     if ((listargs->ret & LIST_RET_STATUS) &&
         !(attributes & MBOX_ATTRIBUTE_NOSELECT)) {
