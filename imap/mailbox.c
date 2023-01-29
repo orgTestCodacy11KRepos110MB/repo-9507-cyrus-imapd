@@ -1829,12 +1829,46 @@ EXPORTED struct entryattlist *mailbox_extract_annots(const struct mailbox *mailb
     return annots;
 }
 
+struct index_header_offsets {
+    off_t mailbox_options;
+    off_t leaked_cache;
+    off_t highestmodseq;
+    off_t deletedmodseq;
+    off_t exists;
+    off_t changes_epoch;
+    off_t quota_deleted_used;
+    off_t quota_expunged_used;
+};
+
+static const struct index_header_offsets orig_offsets = {
+    ORIG_OFFSET_MAILBOX_OPTIONS,
+    ORIG_OFFSET_LEAKED_CACHE,
+    ORIG_OFFSET_HIGHESTMODSEQ,
+    ORIG_OFFSET_DELETEDMODSEQ,
+    ORIG_OFFSET_EXISTS,
+    ORIG_OFFSET_CHANGES_EPOCH,
+    ORIG_OFFSET_QUOTA_DELETED_USED,
+    ORIG_OFFSET_QUOTA_EXPUNGED_USED
+};
+
+static const struct index_header_offsets new_offsets = {
+    OFFSET_MAILBOX_OPTIONS,
+    OFFSET_LEAKED_CACHE,
+    OFFSET_HIGHESTMODSEQ,
+    OFFSET_DELETEDMODSEQ,
+    OFFSET_EXISTS,
+    OFFSET_CHANGES_EPOCH,
+    OFFSET_QUOTA_DELETED_USED,
+    OFFSET_QUOTA_EXPUNGED_USED
+};
+
 static int mailbox_buf_to_index_header(const char *buf, size_t len,
                                        struct index_header *i)
 {
     uint32_t crc;
     bit32 qannot;
     size_t headerlen;
+    const struct index_header_offsets *offsets = &new_offsets;
 
     if (len < OFFSET_MINOR_VERSION+4)
         return IMAP_MAILBOX_BADFORMAT;
@@ -1865,6 +1899,7 @@ static int mailbox_buf_to_index_header(const char *buf, size_t len,
     case 16:
     case 17:
     case 18:
+    case 19:
         headerlen = 160;
         break;
     default:
@@ -1872,6 +1907,8 @@ static int mailbox_buf_to_index_header(const char *buf, size_t len,
     }
     if (len < headerlen)
         return IMAP_MAILBOX_BADFORMAT;
+
+    if (i->minor_version < 19) offsets = &orig_offsets;
 
     i->start_offset = ntohl(*((bit32 *)(buf+OFFSET_START_OFFSET)));
     i->record_size = ntohl(*((bit32 *)(buf+OFFSET_RECORD_SIZE)));
@@ -1884,15 +1921,15 @@ static int mailbox_buf_to_index_header(const char *buf, size_t len,
     i->deleted = ntohl(*((bit32 *)(buf+OFFSET_DELETED)));
     i->answered = ntohl(*((bit32 *)(buf+OFFSET_ANSWERED)));
     i->flagged = ntohl(*((bit32 *)(buf+OFFSET_FLAGGED)));
-    i->options = ntohl(*((bit32 *)(buf+OFFSET_MAILBOX_OPTIONS)));
-    i->leaked_cache_records = ntohl(*((bit32 *)(buf+OFFSET_LEAKED_CACHE)));
+    i->options = ntohl(*((bit32 *)(buf+offsets->mailbox_options)));
+    i->leaked_cache_records = ntohl(*((bit32 *)(buf+offsets->leaked_cache)));
     if (i->minor_version < 8) goto done;
 
-    i->highestmodseq = align_ntohll(buf+OFFSET_HIGHESTMODSEQ);
+    i->highestmodseq = align_ntohll(buf+offsets->highestmodseq);
     if (i->minor_version < 12) goto done;
 
-    i->deletedmodseq = align_ntohll(buf+OFFSET_DELETEDMODSEQ);
-    i->exists = ntohl(*((bit32 *)(buf+OFFSET_EXISTS)));
+    i->deletedmodseq = align_ntohll(buf+offsets->deletedmodseq);
+    i->exists = ntohl(*((bit32 *)(buf+offsets->exists)));
     i->first_expunged = ntohl(*((bit32 *)(buf+OFFSET_FIRST_EXPUNGED)));
     i->last_repack_time = ntohl(*((bit32 *)(buf+OFFSET_LAST_REPACK_TIME)));
     i->header_file_crc = ntohl(*((bit32 *)(buf+OFFSET_HEADER_FILE_CRC)));
@@ -1919,14 +1956,16 @@ static int mailbox_buf_to_index_header(const char *buf, size_t len,
 
     if (i->minor_version < 17) goto crc;
 
-    i->changes_epoch = ntohl(*((bit32 *)(buf+OFFSET_CHANGES_EPOCH)));
+    i->changes_epoch = ntohl(*((bit32 *)(buf+offsets->changes_epoch)));
 
     if (i->minor_version < 18) goto crc;
 
-    i->quota_deleted_used = align_ntohll(buf+OFFSET_QUOTA_DELETED_USED);
-    i->quota_expunged_used = align_ntohll(buf+OFFSET_QUOTA_EXPUNGED_USED);
+    i->quota_deleted_used = align_ntohll(buf+offsets->quota_deleted_used);
+    i->quota_expunged_used = align_ntohll(buf+offsets->quota_expunged_used);
 
-crc:
+    /* v19 only rearranged fields so modseq_t & quota_t fall on 8-byte boundaries */
+
+  crc:
     /* CRC is always the last 4 bytes */
     crc = ntohl(*((bit32 *)(buf+headerlen-4)));
     if (crc != crc32_map(buf, headerlen-4))
@@ -2821,6 +2860,8 @@ static bit32 mailbox_index_header_to_buf(struct index_header *i, unsigned char *
     bit32 crc;
     bit32 options = i->options & MAILBOX_OPT_VALID;
     size_t headerlen = INDEX_HEADER_SIZE;
+    const struct index_header_offsets *offsets = 
+        (i->minor_version < 19) ? &orig_offsets : &new_offsets;
 
     memset(buf, 0, INDEX_HEADER_SIZE); /* buffer is always this big, and aligned */
 
@@ -2849,14 +2890,14 @@ static bit32 mailbox_index_header_to_buf(struct index_header *i, unsigned char *
     *((bit32 *)(buf+OFFSET_FLAGGED)) = htonl(i->flagged);
     if (i->minor_version < 8) {
         /* this was called OFFSET_POP3_NEW_UIDL and was only zero or one */
-        *((bit32 *)(buf+OFFSET_MAILBOX_OPTIONS)) = htonl(options&1);
+        *((bit32 *)(buf+offsets->mailbox_options)) = htonl(options&1);
         return 0; /* no CRC32 support */
     }
 
     /* otherwise we have options and modseqs */
-    *((bit32 *)(buf+OFFSET_MAILBOX_OPTIONS)) = htonl(options);
-    *((bit32 *)(buf+OFFSET_LEAKED_CACHE)) = htonl(i->leaked_cache_records);
-    align_htonll(buf+OFFSET_HIGHESTMODSEQ, i->highestmodseq);
+    *((bit32 *)(buf+offsets->mailbox_options)) = htonl(options);
+    *((bit32 *)(buf+offsets->leaked_cache)) = htonl(i->leaked_cache_records);
+    align_htonll(buf+offsets->highestmodseq, i->highestmodseq);
 
     /* and that's where it stopped until version 2.4.0 with index version 12 (ignoring
      * version 11, which doesn't exist in the wild */
@@ -2864,8 +2905,8 @@ static bit32 mailbox_index_header_to_buf(struct index_header *i, unsigned char *
         return 0;
     }
 
-    align_htonll(buf+OFFSET_DELETEDMODSEQ, i->deletedmodseq);
-    *((bit32 *)(buf+OFFSET_EXISTS)) = htonl(i->exists);
+    align_htonll(buf+offsets->deletedmodseq, i->deletedmodseq);
+    *((bit32 *)(buf+offsets->exists)) = htonl(i->exists);
     *((bit32 *)(buf+OFFSET_FIRST_EXPUNGED)) = htonl(i->first_expunged);
     *((bit32 *)(buf+OFFSET_LAST_REPACK_TIME)) = htonl(i->last_repack_time);
     *((bit32 *)(buf+OFFSET_HEADER_FILE_CRC)) = htonl(i->header_file_crc);
@@ -2897,12 +2938,12 @@ static bit32 mailbox_index_header_to_buf(struct index_header *i, unsigned char *
     }
 
     if (i->minor_version > 16) {
-        *((bit32 *)(buf+OFFSET_CHANGES_EPOCH)) = htonl(i->changes_epoch);
+        *((bit32 *)(buf+offsets->changes_epoch)) = htonl(i->changes_epoch);
     }
 
     if (i->minor_version > 17) {
-        align_htonll(buf+OFFSET_QUOTA_DELETED_USED, i->quota_deleted_used);
-        align_htonll(buf+OFFSET_QUOTA_EXPUNGED_USED, i->quota_expunged_used);
+        align_htonll(buf+offsets->quota_deleted_used, i->quota_deleted_used);
+        align_htonll(buf+offsets->quota_expunged_used, i->quota_expunged_used);
     }
 
     /* Update checksum */
@@ -4864,6 +4905,7 @@ static int mailbox_repack_setup(struct mailbox *mailbox, int version,
     case 16:
     case 17:
     case 18:
+    case 19:
         repack->newmailbox.i.start_offset = 160;
         repack->newmailbox.i.record_size = 112;
         break;
